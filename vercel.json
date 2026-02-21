@@ -1,0 +1,5 @@
+{
+  "version": 2,
+  "functions": { "api/apollo.js": { "runtime": "nodejs18.x" } },
+  "routes": [{ "src": "/apollo", "dest": "/api/apollo.js" }]
+}
