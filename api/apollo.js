@@ -1,8 +1,7 @@
-// Vercel Serverless Function: Apollo People Search Proxy v2.1
-// Fixes: handles non-JSON Apollo responses, tries API key as header
+/ Vercel Serverless Function: Apollo People Search Proxy v2.2
+// Apollo NOW REQUIRES api key in X-Api-Key header, not in body
 
 export default async function handler(req, res) {
-  // CORS headers
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -20,12 +19,13 @@ export default async function handler(req, res) {
   let total = null;
   let debugInfo = {};
 
-  // Safe Apollo fetch — handles non-JSON responses gracefully
+  // Apollo fetch with key in header (required as of 2025)
   async function apolloFetch(endpoint, body) {
     const r = await fetch('https://api.apollo.io' + endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'X-Api-Key': key,
         'Cache-Control': 'no-cache'
       },
       body: JSON.stringify(body)
@@ -39,9 +39,6 @@ export default async function handler(req, res) {
       throw new Error('Apollo returned non-JSON (HTTP ' + r.status + '): ' + text.slice(0, 200));
     }
 
-    if (r.status === 401 || r.status === 403) {
-      throw new Error('Apollo auth error (' + r.status + '): ' + (data.message || data.error || text.slice(0, 100)));
-    }
     if (r.status >= 400) {
       throw new Error('Apollo error (' + r.status + '): ' + (data.message || data.error || JSON.stringify(data).slice(0, 200)));
     }
@@ -50,11 +47,10 @@ export default async function handler(req, res) {
   }
 
   try {
-    // ── ATTEMPT A: Domain + title filter ──
+    // ATTEMPT A: Domain + title filter
     if (!broaden && titles && titles.length > 0) {
       try {
         const dA = await apolloFetch('/v1/mixed_people/search', {
-          api_key: key,
           q_organization_domains: cleanDomain,
           person_titles: titles,
           page: 1,
@@ -72,11 +68,10 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── ATTEMPT B: Domain only, no title filter ──
+    // ATTEMPT B: Domain only
     if (people.length === 0) {
       try {
         const dB = await apolloFetch('/v1/mixed_people/search', {
-          api_key: key,
           q_organization_domains: cleanDomain,
           page: 1,
           per_page: 25
@@ -93,11 +88,10 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── ATTEMPT C: Organization search then people by org ID ──
+    // ATTEMPT C: Org search then people by org ID
     if (people.length === 0) {
       try {
         const orgD = await apolloFetch('/v1/mixed_companies/search', {
-          api_key: key,
           q_organization_domains: cleanDomain,
           page: 1,
           per_page: 1
@@ -107,7 +101,6 @@ export default async function handler(req, res) {
 
         if (orgs.length > 0) {
           const pD = await apolloFetch('/v1/mixed_people/search', {
-            api_key: key,
             organization_ids: [orgs[0].id],
             page: 1,
             per_page: 25
@@ -125,12 +118,11 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── ATTEMPT D: People search by organization name ──
+    // ATTEMPT D: People search by org name
     if (people.length === 0) {
       try {
         const orgName = cleanDomain.replace(/\.(com|io|co|net|org|us|app)$/i, '').replace(/[^a-zA-Z0-9]/g, ' ').trim();
         const dD = await apolloFetch('/v1/mixed_people/search', {
-          api_key: key,
           q_organization_name: orgName,
           page: 1,
           per_page: 25
@@ -147,38 +139,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // ── ATTEMPT E: Try with API key in header instead of body ──
-    if (people.length === 0) {
-      try {
-        const rE = await fetch('https://api.apollo.io/v1/mixed_people/search', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-api-key': key,
-            'Cache-Control': 'no-cache'
-          },
-          body: JSON.stringify({
-            q_organization_domains: cleanDomain,
-            page: 1,
-            per_page: 25
-          })
-        });
-        const textE = await rE.text();
-        let dE;
-        try { dE = JSON.parse(textE); } catch (pe) { dE = { error: textE.slice(0, 200) }; }
-        if (debug) debugInfo.attempt_e = { used_header_key: true, status: rE.status, total: dE.pagination?.total_entries ?? null, people_count: (dE.people || []).length };
-        if (dE.people && dE.people.length > 0) {
-          people = dE.people;
-          total = dE.pagination?.total_entries ?? null;
-          attempt_used = 'E';
-          attempt_reason = 'API key as x-api-key header';
-        }
-      } catch (e) {
-        if (debug) debugInfo.attempt_e = { status: 'error', error: e.message };
-      }
-    }
-
-    // ── BUILD RESPONSE ──
+    // BUILD RESPONSE
     return res.status(200).json({
       ok: people.length > 0,
       domain: cleanDomain,
